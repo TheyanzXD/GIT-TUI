@@ -31,7 +31,7 @@
 
 ### 1. Clone the repository
 ```bash
-git clone [https://github.com/TheyanzXD/GITSC-TUI.git](https://github.com/TheyanzXD/GITSC-TUI.git)
+git clone https://github.com/Yanz-iyyo/GITSC-TUI
 cd GITSC-TUI
 ```
 
@@ -67,5 +67,5 @@ GITSC_TUI/
 └── config.py   # Configuration constants and color theme management
 ```
 ★★ 🤝 Contributing
-​👨‍💻 Developer
-​Developed by: github.com/TheyanzXD
+​👨‍💻 Developer ​Developed by: 
+<a href="https://github.com/TheyanzXD">@TheyanzXD</a>
