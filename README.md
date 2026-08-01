@@ -27,16 +27,6 @@
 
 ---
 
-## 🛠️ Installation
-
-### pip / pipx
-
-```bash
-pip install github-tui
-pipx install github-tui
-github-tui
-```
-
 ### Manual (or Termux / WSL)
 
 ```bash
