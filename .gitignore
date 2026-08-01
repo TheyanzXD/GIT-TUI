@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/
+debug.log
+.mypy_cache/
+GITSC-TUI.zip

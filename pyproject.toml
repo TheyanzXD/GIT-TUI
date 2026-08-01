@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "github-tui"
+version = "2.0.0"
+description = "Fast, lightweight, beautiful TUI for browsing, searching, and managing GitHub repositories. Python + curses, zero dependencies."
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "TheyanzXD" }]
+requires-python = ">=3.8"
+classifiers = [
+    "Environment :: Console :: Curses",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3",
+    "Topic :: Terminals :: Terminal Emulators/X Terminals",
+]
+
+[project.scripts]
+github-tui = "main:main"
+
+[tool.setuptools]
+packages = ["api", "features", "ui"]
+py-modules = ["main", "app", "config", "utils"]
+
+[tool.mypy]
+strict = true
+python_version = "3.8"
+disable_error_code = ["no-untyped-def", "no-untyped-call"]
+exclude = "(tests/|ui/)"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "app"
+ignore_errors = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

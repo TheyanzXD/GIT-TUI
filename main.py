@@ -1,251 +1,270 @@
-# main.py
+# main.py - Entry point: CLI commands and TUI bootstrap.
+
+import argparse
+import csv
+import json
+import sys
 
 import curses
-import datetime
-import subprocess
-from api import fetch_trending_repos, fetch_user_repos, check_rate_limit
-from ui import TermuxUI
-from config import ITEMS_PER_PAGE
 
-def main(stdscr):
-    # Initialize UI elements
-    ui = TermuxUI(stdscr)
-    
-    last_month = (datetime.date.today() - datetime.timedelta(days=30)).isoformat()
-    trending_query = f"created:>{last_month}"
-    
-    current_mode = "TRENDING BULAN INI"
-    current_query = trending_query
-    search_type = "trending"
-    
-    page = 1
-    selected_idx = 0
-    viewport_top = 0
-    status_msg = ""
-    
-    items = []
-    raw_data = []
+from api import endpoints
+from api.client import GitHubClient, GitHubError
+from api.models import Repo, User, Org
+from config import Config
+from utils import setup_logging
 
-    def load_data(append=False):
-        nonlocal items, raw_data, page
-        rl = check_rate_limit()
-        
-        # Parse rate limit cleanly and safely
-        if isinstance(rl, dict) and "resources" in rl:
-            rem = rl.get("resources", {}).get("core", {}).get("remaining", "Habis")
-        else:
-            rem = "Offline/Error"
-            
-        error_occurred = None
-        
-        if search_type in ["trending", "repo"]:
-            data = fetch_trending_repos(current_query, page=page, per_page=ITEMS_PER_PAGE)
-            if isinstance(data, dict) and "items" in data:
-                new_raw = data["items"]
-                new_items = [f"{r.get('full_name', 'Unknown')} (⭐ {r.get('stargazers_count', 0)})" for r in new_raw]
-                if not new_raw and page > 1:
-                    error_occurred = "Semua data telah dimuat."
-                elif not new_raw:
-                    new_items = ["Repositori tidak ditemukan."]
-            elif isinstance(data, dict) and "error" in data:
-                new_raw = []
-                error_occurred = data["error"]
-                new_items = [f"Error: {error_occurred}"] if not append else []
-            else:
-                new_raw = []
-                error_occurred = "Format data API tidak valid."
-                new_items = [f"Error: {error_occurred}"] if not append else []
-        else:
-            data = fetch_user_repos(current_query, page=page, per_page=ITEMS_PER_PAGE)
-            if isinstance(data, list):
-                new_raw = data
-                new_items = [f"{r.get('name', 'Unknown')} (⭐ {r.get('stargazers_count', 0)} | {r.get('language') or '-'})" for r in new_raw]
-                if not new_raw and page > 1:
-                    error_occurred = "Semua repositori user telah dimuat."
-                elif not new_raw:
-                    new_items = ["User tidak ditemukan atau Repositori kosong."]
-            elif isinstance(data, dict) and "error" in data:
-                new_raw = []
-                error_occurred = data["error"]
-                new_items = [f"Error: {error_occurred}"] if not append else []
-            else:
-                new_raw = []
-                error_occurred = "User tidak ditemukan atau error koneksi."
-                new_items = [f"Error: {error_occurred}"] if not append else []
-                
-        if append:
-            if new_raw:
-                raw_data.extend(new_raw)
-                items.extend(new_items)
-            else:
-                # Revert page increase on failure or empty results
-                if page > 1:
-                    page -= 1
-        else:
-            raw_data = new_raw
-            items = new_items
-            
-        return rem, error_occurred
 
-    # Load initial data
-    rate_info, err = load_data(append=False)
-    if err:
-        status_msg = f"{err}"
+def _client(cfg):
+    return GitHubClient(cfg)
 
-    while True:
-        status_height = 2 if status_msg else 0
-        footer_height = 6
-        
-        # Calculate maximum item list height dynamically based on terminal height
-        list_max_height = max(1, ui.height - 6 - footer_height - status_height - 1)
-        
-        if selected_idx < viewport_top:
-            viewport_top = selected_idx
-        elif selected_idx >= viewport_top + list_max_height:
-            viewport_top = selected_idx - list_max_height + 1
-            
-        ui.draw_menu(current_mode, items, selected_idx, viewport_top, rate_info, status_msg)
-        key = stdscr.getch()
-        
-        if key == curses.KEY_RESIZE:
-            ui.resize()
-            status_msg = "🔄 Layar disesuaikan."
+
+def _emit(items, args, headers):
+    if getattr(args, "json", False):
+        print(json.dumps(items, indent=2, default=str))
+    elif getattr(args, "csv", False):
+        w = csv.writer(sys.stdout)
+        w.writerow(headers)
+        for row in items:
+            w.writerow([row.get(h) for h in headers])
+    else:
+        for row in items:
+            print("  ".join(str(row.get(h, "")) for h in headers))
+
+
+def _repo_dicts(repos):
+    return [{
+        "full_name": r.full_name,
+        "description": r.description,
+        "stars": r.stargazers_count,
+        "forks": r.forks_count,
+        "language": r.language,
+        "html_url": r.html_url,
+    } for r in repos]
+
+
+def cmd_search(args, cfg):
+    client = _client(cfg)
+    qualifiers = []
+    for flag, key in (("lang", "language"), ("stars", "stars"), ("forks", "forks")):
+        val = getattr(args, flag, None)
+        if val:
+            qualifiers.append("%s:%s" % (key, val))
+    q = " ".join([args.query] + qualifiers)
+    url = endpoints.search_repos(q, sort=args.sort, order=args.order, page=args.page,
+                                 per_page=cfg.per_page)
+    data = client.get(url, ttl=300, force=args.refresh)
+    repos = [Repo.from_dict(d) for d in data.get("items", [])]
+    _emit(_repo_dicts(repos), args, ["full_name", "stars", "forks", "language", "html_url"])
+    return 0
+
+
+def cmd_view(args, cfg):
+    client = _client(cfg)
+    d = client.get(endpoints.repo(args.owner, args.repo), ttl=600, force=args.refresh)
+    r = Repo.from_dict(d)
+    _emit([{
+        "full_name": r.full_name, "description": r.description, "homepage": r.homepage,
+        "language": r.language, "license": r.license, "default_branch": r.default_branch,
+        "stars": r.stargazers_count, "forks": r.forks_count,
+        "watchers": r.watchers_count, "open_issues": r.open_issues_count,
+        "created_at": r.created_at, "pushed_at": r.pushed_at,
+        "topics": r.topics, "html_url": r.html_url,
+    }], args, ["full_name", "stars", "forks", "language", "html_url"])
+    return 0
+
+
+def cmd_user(args, cfg):
+    client = _client(cfg)
+    try:
+        d = client.get(endpoints.user(args.username), ttl=600, force=args.refresh)
+        u = User.from_dict(d)
+        d_out = {"login": u.login, "name": u.name, "bio": u.bio, "location": u.location,
+                 "email": u.email, "blog": u.blog, "company": u.company,
+                 "public_repos": u.public_repos, "followers": u.followers,
+                 "following": u.following, "created_at": u.created_at, "html_url": u.html_url}
+    except GitHubError:
+        d = client.get(endpoints.org(args.username), ttl=600, force=args.refresh)
+        o = Org.from_dict(d)
+        d_out = {"login": o.login, "name": o.name, "description": o.description,
+                 "public_repos": o.public_repos, "created_at": o.created_at,
+                 "html_url": o.html_url}
+    _emit([d_out], args, ["login", "name", "public_repos", "html_url"])
+    return 0
+
+
+def cmd_trending(args, cfg):
+    client = _client(cfg)
+    from features.trending import fetch_trending
+    raw = fetch_trending(client, since=args.period, language=args.lang, spoken=args.spoken)
+    _emit([{
+        "full_name": r["full_name"], "description": r["description"], "stars": r["stars"],
+        "forks": r["forks"], "language": r["language"], "stars_today": r["today"],
+        "html_url": r["html_url"],
+    } for r in raw], args, ["full_name", "stars", "forks", "language", "html_url"])
+    return 0
+
+
+def cmd_clone(args, cfg):
+    from features.clone import CloneManager
+    client = _client(cfg)
+    d = client.get(endpoints.repo(args.owner, args.repo), ttl=600)
+    repo = Repo.from_dict(d)
+    manager = CloneManager(cfg)
+    protocol = "ssh" if args.ssh else cfg.clone_protocol
+    code, target = manager.clone(repo, dest_dir=args.dir, protocol=protocol)
+    print("OK: %s" % target if code == 0 else "FAILED: %s" % repo.full_name)
+    return 0 if code == 0 else 1
+
+
+def cmd_bookmarks(args, cfg):
+    from features.bookmarks import BookmarkManager
+    manager = BookmarkManager()
+    if args.export:
+        path = manager.export_markdown(args.export)
+        print("exported → %s" % path)
+        return 0
+    if args.import_file:
+        count = manager.import_json(args.import_file)
+        print("imported %d bookmarks" % count)
+        return 0
+    items = [{"full_name": b["full_name"], "stars": b["stars"]} for b in manager.list_collection()]
+    _emit(items, args, ["full_name", "stars"])
+    return 0
+
+
+def cmd_config(args, cfg):
+    if args.list:
+        for k, v in sorted(cfg.data.items()):
+            print("%s = %s" % (k, v))
+    for kv in args.set or []:
+        if "=" not in kv:
+            print("invalid: %s (expected key=value)" % kv, file=sys.stderr)
             continue
-            
-        elif key == curses.KEY_UP:
-            status_msg = ""
-            if selected_idx > 0:
-                selected_idx -= 1
-                
-        elif key == curses.KEY_DOWN:
-            status_msg = ""
-            if selected_idx < len(items) - 1:
-                selected_idx += 1
-            else:
-                # End of list loads next page automatically
-                status_msg = "⏳ Mengambil data selanjutnya..."
-                ui.draw_menu(current_mode, items, selected_idx, viewport_top, rate_info, status_msg)
-                page += 1
-                rate_info, err = load_data(append=True)
-                if err:
-                    status_msg = f"{err}"
-                else:
-                    status_msg = "✅ Data baru dimuat."
-                if selected_idx < len(items) - 1:
-                    selected_idx += 1
-                    
-        elif key in [10, 13]: # Enter to show detailed card
-            if raw_data and selected_idx < len(raw_data):
-                repo = raw_data[selected_idx]
-                info = {
-                    "Nama": repo.get('name', '-'),
-                    "Author": repo.get('owner', {}).get('login', '-'),
-                    "Bintang": f"⭐ {repo.get('stargazers_count', 0)}",
-                    "Forks": f"🍴 {repo.get('forks_count', 0)}",
-                    "Bahasa": repo.get('language', '-') or '-',
-                    "Dibuat": repo.get('created_at', '')[:10] or '-',
-                    "URL": repo.get('html_url', '-')
-                }
-                desc = repo.get('description') or "Tidak ada deskripsi."
-                ui.show_detail(repo.get('full_name', 'Detail'), info, desc)
-                status_msg = ""
-                
-        elif key in [ord('c'), ord('C')]: # Clone repo via git
-            if raw_data and selected_idx < len(raw_data):
-                repo = raw_data[selected_idx]
-                clone_url = repo.get('clone_url')
-                repo_name = repo.get('name')
-                
-                if not clone_url:
-                    status_msg = "❌ URL clone tidak valid."
-                    continue
-                    
-                status_msg = f"⚙️ MENG-CLONE: {repo_name}..."
-                ui.draw_menu(current_mode, items, selected_idx, viewport_top, rate_info, status_msg)
-                
-                try:
-                    result = subprocess.run(["git", "clone", clone_url], capture_output=True, text=True, check=False)
-                    if result.returncode == 0:
-                        status_msg = f"✅ CLONE BERHASIL: {repo_name} tersimpan."
-                    else:
-                        status_msg = "❌ CLONE GAGAL: Folder sudah ada atau koneksi putus."
-                except Exception:
-                    status_msg = "❌ KESALAHAN: Perintah git gagal dieksekusi (apakah git terinstall?)."
-                    
-        elif key in [ord('n'), ord('N')]: # Manual pagination load more
-            status_msg = "⏳ Mengambil halaman selanjutnya..."
-            ui.draw_menu(current_mode, items, selected_idx, viewport_top, rate_info, status_msg)
-            page += 1
-            rate_info, err = load_data(append=True)
-            if err:
-                status_msg = f"{err}"
-            else:
-                status_msg = "✅ Halaman baru dimuat."
-            
-        elif key in [ord('s'), ord('S')]: # Custom query searching
-            status_msg = ""
-            pilihan = ui.get_input("Cari [1] Repo / [2] User? (1/2): ")
-            
-            if pilihan == '1':
-                query = ui.get_input("Kata kunci Repository: ")
-                if query:
-                    current_mode = f"CARI REPO: {query}"
-                    current_query = query
-                    search_type = "repo"
-                    page = 1
-                    selected_idx = 0
-                    viewport_top = 0
-                    status_msg = "⏳ Mencari Repository..."
-                    ui.draw_menu(current_mode, items, selected_idx, viewport_top, rate_info, status_msg)
-                    rate_info, err = load_data(append=False)
-                    if err:
-                        status_msg = f"❌ {err}"
-                    else:
-                        status_msg = "✅ Pencarian selesai."
-                else:
-                    status_msg = "⚠️ Pencarian dibatalkan."
-                    
-            elif pilihan == '2':
-                query = ui.get_input("Username GitHub: ")
-                if query:
-                    current_mode = f"USER: {query}"
-                    current_query = query
-                    search_type = "user"
-                    page = 1
-                    selected_idx = 0
-                    viewport_top = 0
-                    status_msg = "⏳ Mencari User..."
-                    ui.draw_menu(current_mode, items, selected_idx, viewport_top, rate_info, status_msg)
-                    rate_info, err = load_data(append=False)
-                    if err:
-                        status_msg = f"❌ {err}"
-                    else:
-                        status_msg = "✅ Pencarian selesai."
-                else:
-                    status_msg = "⚠️ Pencarian dibatalkan."
-            elif pilihan != "":
-                status_msg = "❌ Pilihan tidak valid (harus 1 atau 2)."
-                    
-        elif key in [ord('t'), ord('T')]: # Reset/fetch monthly trending
-            current_mode = "TRENDING BULAN INI"
-            current_query = trending_query
-            search_type = "trending"
-            page = 1
-            selected_idx = 0
-            viewport_top = 0
-            status_msg = "⏳ Memuat Trending..."
-            ui.draw_menu(current_mode, items, selected_idx, viewport_top, rate_info, status_msg)
-            rate_info, err = load_data(append=False)
-            if err:
-                status_msg = f"{err}"
-            else:
-                status_msg = "✅ Trending dimuat."
-            
-        elif key in [ord('q'), ord('Q')]: # Quit TUI cleanly
-            break
+        k, v = kv.split("=", 1)
+        try:
+            cfg.set(k, v)
+            print("set %s = %s" % (k, v))
+        except KeyError as e:
+            print("error: %s" % e, file=sys.stderr)
+    return 0
+
+
+def _parser():
+    p = argparse.ArgumentParser(
+        prog="github-tui",
+        description="GitHub Scraper TUI - browse, search, and manage GitHub repos from the terminal")
+    common = argparse.ArgumentParser(add_help=False)
+    for name, help_ in (("--debug", "enable debug logging"),
+                        ("--no-tui", "do not launch the TUI"),
+                        ("--json", "output results as JSON"),
+                        ("--csv", "output results as CSV"),
+                        ("--refresh", "bypass cache")):
+        common.add_argument(name, action="store_true", help=help_)
+    p.add_argument("--debug", action="store_true", help="enable debug logging")
+    p.add_argument("--no-tui", action="store_true", help="do not launch the TUI")
+    p.add_argument("--json", action="store_true", help="output results as JSON")
+    p.add_argument("--csv", action="store_true", help="output results as CSV")
+    p.add_argument("--refresh", action="store_true", help="bypass cache")
+    sub = p.add_subparsers(dest="command")
+
+    s = sub.add_parser("search", help="search repositories", parents=[common])
+    s.add_argument("query")
+    s.add_argument("--lang")
+    s.add_argument("--stars")
+    s.add_argument("--forks")
+    s.add_argument("--sort", choices=["stars", "forks", "updated", "name"], default="stars")
+    s.add_argument("--order", choices=["desc", "asc"], default="desc")
+    s.add_argument("--page", type=int, default=1)
+
+    v = sub.add_parser("view", help="show repository details", parents=[common])
+    v.add_argument("owner_repo", metavar="OWNER/REPO")
+
+    u = sub.add_parser("user", help="show user or org profile", parents=[common])
+    u.add_argument("username")
+
+    t = sub.add_parser("trending", help="fetch trending repositories", parents=[common])
+    t.add_argument("--lang")
+    t.add_argument("--period", choices=["daily", "weekly", "monthly"], default="daily")
+    t.add_argument("--spoken")
+
+    c = sub.add_parser("clone", help="clone a repository", parents=[common])
+    c.add_argument("owner_repo", metavar="OWNER/REPO")
+    c.add_argument("--dir")
+    c.add_argument("--ssh", action="store_true")
+
+    b = sub.add_parser("bookmarks", help="manage bookmarks", parents=[common])
+    b.add_argument("--export", metavar="FILE")
+    b.add_argument("--import", dest="import_file", metavar="FILE")
+
+    cfgp = sub.add_parser("config", help="view or set configuration", parents=[common])
+    cfgp.add_argument("--set", action="append", metavar="KEY=VALUE")
+    cfgp.add_argument("--list", action="store_true")
+    return p
+
+
+def _resolve_view_args(args):
+    spec = getattr(args, "owner_repo", None) or ""
+    if spec:
+        parts = spec.strip().strip("/").split("/")
+        if len(parts) == 2:
+            return parts
+    return None
+
+
+def main(argv=None):
+    parser = _parser()
+    args = parser.parse_args(argv)
+    setup_logging(args.debug)
+    cfg = Config.load()
+
+    if args.command == "config":
+        return cmd_config(args, cfg)
+
+    if args.command is None:
+        if args.no_tui:
+            parser.print_help()
+            return 0
+        try:
+            return curses.wrapper(lambda stdscr: _run_tui(stdscr, cfg))
+        except Exception as e:
+            print("[!] TUI error: %s" % e, file=sys.stderr)
+            if args.debug:
+                raise
+            return 1
+
+    try:
+        if args.command == "search":
+            return cmd_search(args, cfg)
+        if args.command == "view":
+            parts = _resolve_view_args(args)
+            if not parts:
+                print("error: expected OWNER/REPO", file=sys.stderr)
+                return 1
+            args.owner, args.repo = parts
+            return cmd_view(args, cfg)
+        if args.command == "user":
+            return cmd_user(args, cfg)
+        if args.command == "trending":
+            return cmd_trending(args, cfg)
+        if args.command == "clone":
+            parts = _resolve_view_args(args)
+            if not parts:
+                print("error: expected OWNER/REPO", file=sys.stderr)
+                return 1
+            args.owner, args.repo = parts
+            return cmd_clone(args, cfg)
+        if args.command == "bookmarks":
+            return cmd_bookmarks(args, cfg)
+    except GitHubError as e:
+        print("[!] %s" % e.message, file=sys.stderr)
+        return 1
+    return 0
+
+
+def _run_tui(stdscr, cfg):
+    from app import App
+    return App(stdscr, cfg).run()
+
 
 if __name__ == "__main__":
-    try:
-        curses.wrapper(main)
-    except Exception as e:
-        print(f"\n[!] Terjadi kesalahan TUI: {e}\n")
+    sys.exit(main())

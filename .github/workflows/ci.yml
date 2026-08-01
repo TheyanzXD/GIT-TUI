@@ -1,0 +1,72 @@
+name: CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v4
+        with:
+          python-version: "3.10"
+      - run: pip install flake8 pylint
+      - name: flake8
+        run: flake8 . --max-line-length=110 --exclude=.git,.github
+      - name: pylint (errors only)
+        run: pylint -E --disable=import-error app.py main.py api features ui config.py utils.py
+
+  type-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v4
+        with:
+          python-version: "3.10"
+      - run: pip install mypy
+      - name: mypy --strict
+        run: mypy --config-file pyproject.toml .
+
+  unit-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v4
+        with:
+          python-version: "3.10"
+      - run: python -m unittest discover -v
+
+  integration:
+    runs-on: ubuntu-latest
+    if: ${{ secrets.READONLY_GITHUB_TOKEN != '' }}
+    env:
+      GITHUB_TOKEN: ${{ secrets.READONLY_GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v4
+        with:
+          python-version: "3.10"
+      - name: search returns results
+        run: python main.py search flask --lang python --json | python -c "import json,sys; assert len(json.load(sys.stdin)) > 0"
+      - name: repo detail loads
+        run: python main.py view pallets/flask --json | python -c "import json,sys; assert json.load(sys.stdin)[0]['full_name'] == 'pallets/flask'"
+      - name: rate limit header parsed
+        run: python main.py user torvalds --json | python -c "import json,sys; assert json.load(sys.stdin)[0]['login'] == 'torvalds'"
+
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v4
+        with:
+          python-version: "3.10"
+      - run: pip install .
+      - name: entry point works
+        run: github-tui --help && github-tui config --list
