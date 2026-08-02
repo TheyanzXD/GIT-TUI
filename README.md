@@ -35,6 +35,10 @@ cd GITSC-TUI
 python main.py          # launch TUI
 python main.py --help   # CLI
 ```
+### One Line installation
+```bash
+curl -fsSL https://raw.githubusercontent.com/TheyanzXD/GIT-TUI/main/install | bash
+```
 
 Quick-access alias:
 
