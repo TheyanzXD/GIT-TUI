@@ -1,0 +1,122 @@
+#!/usr/bin/env bash
+# ==============================================================================
+#  GITSC-TUI Auto Installer
+# ==============================================================================
+
+set -e
+
+# Warna dan Format (Kiro Agent Style)
+BOLD="\033[1m"
+DIM="\033[2m"
+CYAN="\033[36m"
+GREEN="\033[32m"
+YELLOW="\033[33m"
+RED="\033[31m"
+NC="\033[0m" # No Color
+
+# Simbol
+CHECK="${GREEN}✔${NC}"
+CROSS="${RED}✖${NC}"
+ARROW="${CYAN}➜${NC}"
+SPINNER_CHARS=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
+
+MEDIAFIRE_URL="https://www.mediafire.com/file/7div89j5ph61h8m/GITSC-TUI.zip/file"
+TARGET_DIR="GITSC-TUI"
+TEMP_ZIP="temp_gitsc_tui.zip"
+
+# Fungsi Header Banner
+print_header() {
+    clear
+    echo -e "${CYAN}${BOLD}"
+    echo "  ██████╗ ██╗████████╗███████╗██╗  ██╗"
+    echo "  ██╔════╝ ██║╚══██╔══╝██╔════╝██║  ██║"
+    echo "  ██║  ███╗██║   ██║   ███████╗███████║"
+    echo "  ██║   ██║██║   ██║   ╚════██║██╔══██║"
+    echo "  ╚██████╔╝██║   ██║   ███████║██║  ██║"
+    echo "   ╚═════╝ ╚═╝   ╚═╝   ╚══════╝╚═╝  ╚═╝"
+    echo -e "         ${DIM}TUI Installer v1.0.0${NC}\n"
+}
+
+# Fungsi Animasi Spinner
+run_with_spinner() {
+    local msg="$1"
+    local cmd="$2"
+    
+    # Jalankan perintah di background
+    eval "$cmd" > /dev/null 2>&1 &
+    local pid=$!
+    local delay=0.1
+    local i=0
+
+    # Tampilkan spinner selama proses berjalan
+    while kill -0 $pid 2>/dev/null; do
+        i=$(( (i + 1) % ${#SPINNER_CHARS[@]} ))
+        printf "\r  ${CYAN}%s${NC} %s..." "${SPINNER_CHARS[$i]}" "$msg"
+        sleep $delay
+    done
+
+    wait $pid
+    local exit_code=$?
+
+    if [ $exit_code -eq 0 ]; then
+        printf "\r  %b %s\n" "$CHECK" "$msg"
+    else
+        printf "\r  %b %s (Gagal!)\n" "$CROSS" "$msg"
+        exit 1
+    fi
+}
+
+print_step() {
+    echo -e "\n${BOLD}${CYAN}[$1/$2]${NC} ${BOLD}$3${NC}"
+}
+
+# Main Execution
+print_header
+
+# Step 1: Pemeriksaan Dependensi System
+print_step 1 4 "Memeriksa dependensi sistem"
+
+if ! command -v curl &> /dev/null; then
+    echo -e "  ${CROSS} 'curl' tidak ditemukan. Harap install curl terlebih dahulu."
+    exit 1
+fi
+
+if ! command -v unzip &> /dev/null; then
+    echo -e "  ${CROSS} 'unzip' tidak ditemukan. Harap install unzip terlebih dahulu."
+    exit 1
+fi
+echo -e "  ${CHECK} Semua dependensi awal terpenuhi."
+
+# Step 2: Menyiapkan Direktori
+print_step 2 4 "Menyiapkan direktori tujuan (${TARGET_DIR}/)"
+mkdir -p "$TARGET_DIR"
+echo -e "  ${CHECK} Folder target ${BOLD}${TARGET_DIR}/${NC} siap."
+
+# Step 3: Menarik Direct Link MediaFire & Download
+print_step 3 4 "Mengunduh file dari MediaFire"
+
+# Ambil direct link dari landing page MediaFire
+DIRECT_LINK=$(curl -sL "$MEDIAFIRE_URL" | grep -oE 'https://download[0-9]*\.mediafire\.com/[^"]+' | head -n 1)
+
+if [ -z "$DIRECT_LINK" ]; then
+    echo -e "  ${CROSS} Gagal mengambil tautan unduhan langsung dari MediaFire."
+    exit 1
+fi
+
+run_with_spinner "Mengunduh berkas ZIP" "curl -sL '$DIRECT_LINK' -o '$TEMP_ZIP'"
+
+# Step 4: Ekstraksi Berkas
+print_step 4 4 "Mengekstrak berkas ke folder target"
+
+run_with_spinner "Mengekstrak $TEMP_ZIP ke $TARGET_DIR/" "unzip -o '$TEMP_ZIP' -d '$TARGET_DIR/'"
+
+# Membersihkan file zip sementara
+rm -f "$TEMP_ZIP"
+
+# Tampilan Selesai
+echo -e "\n${GREEN}====================================================${NC}"
+echo -e " ${CHECK} ${BOLD}Instalasi GITSC-TUI Berhasil Diselesaikan!${NC}"
+echo -e "${GREEN}====================================================${NC}"
+echo -e "  ${ARROW} Lokasi File : ${CYAN}$(pwd)/${TARGET_DIR}/${NC}"
+echo -e "  ${ARROW} Cara Masuk  : ${BOLD}cd ${TARGET_DIR}${NC}\n"
+
